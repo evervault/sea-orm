@@ -5,7 +5,7 @@ use sea_orm_codegen::{
     DateTimeCrate as CodegenDateTimeCrate, EntityFormat, EntityTransformer, EntityWriterContext,
     MergeReport, OutputFile, WithPrelude, WithSerde, merge_entity_files,
 };
-use std::{error::Error, fs, path::Path, process::Command, str::FromStr};
+use std::{error::Error, fs, path::Path, process::Command, str::FromStr, collections::HashMap};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use url::Url;
 
@@ -19,6 +19,7 @@ pub async fn run_generate_command(
             compact_format: _,
             expanded_format,
             frontend_format,
+            oxide_format,
             include_hidden_tables,
             tables,
             ignore_tables,
@@ -44,6 +45,7 @@ pub async fn run_generate_command(
             impl_active_model_behavior,
             preserve_user_modifications,
             banner_version,
+            rename_variant_names
         } => {
             if verbose {
                 let _ = tracing_subscriber::fmt()
@@ -227,6 +229,8 @@ pub async fn run_generate_command(
                     EntityFormat::Expanded
                 } else if frontend_format {
                     EntityFormat::Frontend
+                } else if oxide_format {
+                    EntityFormat::Oxide
                 } else if let Some(entity_format) = entity_format {
                     EntityFormat::from_str(&entity_format).expect("Invalid entity-format option")
                 } else {
@@ -249,6 +253,7 @@ pub async fn run_generate_command(
                 seaography,
                 impl_active_model_behavior,
                 banner_version.into(),
+                HashMap::from_iter(rename_variant_names)
             );
             let output = EntityTransformer::transform(table_stmts)?.generate(&writer_context);
 

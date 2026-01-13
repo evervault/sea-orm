@@ -2,6 +2,7 @@ use heck::ToUpperCamelCase;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use sea_query::DynIden;
+use std::collections::HashMap;
 
 use crate::{EntityFormat, WithSerde};
 
@@ -19,12 +20,17 @@ impl ActiveEnum {
         extra_derives: &TokenStream,
         extra_attributes: &TokenStream,
         entity_format: EntityFormat,
+        rename_active_enums: HashMap<String, String>,
     ) -> TokenStream {
         let enum_name = &self.enum_name.to_string();
         let enum_iden = format_ident!("{}", enum_name.to_upper_camel_case());
         let values: Vec<String> = self.values.iter().map(|v| v.to_string()).collect();
 
         let variants = values.iter().map(|v| v.trim()).map(|v| {
+            if let Some(rename_value) = rename_active_enums.get(v) {
+                return format_ident!("{rename_value}");
+            }
+
             if v.is_empty() {
                 println!("Warning: item in the enumeration '{enum_name}' is an empty string, it will be converted to `__EmptyString`. You can modify it later as needed.");
                 return format_ident!("__EmptyString");
@@ -72,7 +78,19 @@ impl ActiveEnum {
             quote! {}
         };
 
-        if entity_format == EntityFormat::Frontend {
+        if entity_format == EntityFormat::Oxide {
+            quote! {
+                #[derive(Debug, Clone, PartialEq, Eq, Hash, sqlx::Type #copy_derive #serde_derive #extra_derives)]
+                #[sqlx(type_name = #enum_name)]
+                #extra_attributes
+                pub enum #enum_iden {
+                    #(
+                        #[serde(rename = #values)]
+                        #variants,
+                    )*
+                }
+            }
+        } else if entity_format == EntityFormat::Frontend {
             quote! {
                 #[derive(Debug, Clone, PartialEq, Eq #copy_derive #serde_derive #extra_derives)]
                 #extra_attributes

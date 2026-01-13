@@ -1,4 +1,4 @@
-use crate::{BigIntegerType, DateTimeCrate, util::escape_rust_keyword};
+use crate::{util::escape_rust_keyword, BigIntegerType, DateTimeCrate};
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -56,25 +56,27 @@ impl Column {
                 ColumnType::BigUnsigned => "u64".to_owned(),
                 ColumnType::Float => "f32".to_owned(),
                 ColumnType::Double => "f64".to_owned(),
-                ColumnType::Json | ColumnType::JsonBinary => "Json".to_owned(),
+                ColumnType::Json | ColumnType::JsonBinary => {
+                    "sqlx::types::Json<serde_json::Value>".to_owned()
+                }
                 ColumnType::Date => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "Date".to_owned(),
+                    DateTimeCrate::Chrono => "chrono::NaiveDate".to_owned(),
                     DateTimeCrate::Time => "TimeDate".to_owned(),
                 },
                 ColumnType::Time => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "Time".to_owned(),
+                    DateTimeCrate::Chrono => "chrono::NaiveTime".to_owned(),
                     DateTimeCrate::Time => "TimeTime".to_owned(),
                 },
                 ColumnType::DateTime => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "DateTime".to_owned(),
+                    DateTimeCrate::Chrono => "chrono::NaiveDateTime".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::Timestamp => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "DateTimeUtc".to_owned(),
+                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::TimestampWithTimeZone => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "DateTimeWithTimeZone".to_owned(),
+                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
                     DateTimeCrate::Time => "TimeDateTimeWithTimeZone".to_owned(),
                 },
                 ColumnType::Decimal(_) | ColumnType::Money(_) => "Decimal".to_owned(),
@@ -128,6 +130,19 @@ impl Column {
             _ => None,
         };
         col_type.map(|ty| quote! { column_type = #ty })
+    }
+
+    pub fn get_oxide_col_type_attrs(&self) -> Option<TokenStream> {
+        if !matches!(self.col_type, ColumnType::TimestampWithTimeZone) {
+            return None;
+        }
+
+        let ty = match self.not_null {
+            true => "chrono::serde::ts_seconds",
+            false => "chrono::serde::ts_seconds_option",
+        };
+
+        quote! { #[serde(with = #ty)] }.into()
     }
 
     pub fn get_def(&self) -> TokenStream {

@@ -1,8 +1,11 @@
-use crate::{ActiveEnum, ColumnOption, Entity, util::escape_rust_keyword};
+use crate::{util::escape_rust_keyword, ActiveEnum, ColumnOption, Entity};
 use heck::ToUpperCamelCase;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use std::{collections::BTreeMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 use syn::{punctuated::Punctuated, token::Comma};
 use tracing::info;
 
@@ -10,6 +13,7 @@ mod compact;
 mod dense;
 mod expanded;
 mod frontend;
+mod oxide;
 
 #[derive(Clone, Debug)]
 pub struct EntityWriter {
@@ -64,6 +68,7 @@ pub enum EntityFormat {
     Expanded,
     Frontend,
     Dense,
+    Oxide,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
@@ -95,6 +100,7 @@ pub struct EntityWriterContext {
     pub(crate) seaography: bool,
     pub(crate) impl_active_model_behavior: bool,
     pub(crate) banner_version: BannerVersion,
+    pub(crate) rename_variant_names: HashMap<String, String>,
 }
 
 impl WithSerde {
@@ -185,6 +191,7 @@ impl FromStr for EntityFormat {
             "expanded" => Self::Expanded,
             "frontend" => Self::Frontend,
             "dense" => Self::Dense,
+            "oxide" => Self::Oxide,
             v => {
                 return Err(crate::Error::TransformError(format!(
                     "Unsupported enum variant '{v}'"
@@ -233,6 +240,7 @@ impl EntityWriterContext {
         seaography: bool,
         impl_active_model_behavior: bool,
         banner_version: BannerVersion,
+        rename_variant_names: HashMap<String, String>,
     ) -> Self {
         Self {
             entity_format,
@@ -253,6 +261,7 @@ impl EntityWriterContext {
             seaography,
             impl_active_model_behavior,
             banner_version,
+            rename_variant_names,
         }
     }
 
@@ -290,6 +299,7 @@ impl EntityWriter {
                 &context.enum_extra_attributes,
                 context.entity_format,
                 context.banner_version,
+                &context.rename_variant_names,
             ));
         }
         WriterOutput { files }
@@ -352,6 +362,20 @@ impl EntityWriter {
                     )
                 } else if context.entity_format == EntityFormat::Dense {
                     Self::gen_dense_code_blocks(
+                        entity,
+                        &context.with_serde,
+                        &context.column_option(),
+                        &context.schema_name,
+                        serde_skip_deserializing_primary_key,
+                        serde_skip_hidden_column,
+                        &context.model_extra_derives,
+                        &context.model_extra_attributes,
+                        &context.column_extra_derives,
+                        context.seaography,
+                        context.impl_active_model_behavior,
+                    )
+                } else if context.entity_format == EntityFormat::Oxide {
+                    Self::gen_oxide_code_blocks(
                         entity,
                         &context.with_serde,
                         &context.column_option(),
@@ -471,10 +495,11 @@ impl EntityWriter {
         extra_attributes: &TokenStream,
         entity_format: EntityFormat,
         banner_version: BannerVersion,
+        rename_variant_names: &HashMap<String, String>,
     ) -> OutputFile {
         let mut lines = Vec::new();
         Self::write_doc_comment(&mut lines, banner_version);
-        if entity_format == EntityFormat::Frontend {
+        if matches!(entity_format, EntityFormat::Frontend | EntityFormat::Oxide) {
             Self::write(&mut lines, vec![Self::gen_import_serde(with_serde)]);
         } else {
             Self::write(&mut lines, vec![Self::gen_import(with_serde)]);
@@ -490,6 +515,7 @@ impl EntityWriter {
                     extra_derives,
                     extra_attributes,
                     entity_format,
+                    rename_variant_names.to_owned(),
                 )
             })
             .collect();
@@ -870,9 +896,9 @@ impl EntityWriter {
 #[cfg(test)]
 mod tests {
     use crate::{
+        entity::writer::{bonus_attributes, bonus_derive},
         Column, ColumnOption, ConjunctRelation, Entity, EntityWriter, PrimaryKey, Relation,
         RelationType, WithSerde,
-        entity::writer::{bonus_attributes, bonus_derive},
     };
     use pretty_assertions::assert_eq;
     use proc_macro2::TokenStream;

@@ -180,6 +180,9 @@ pub enum GenerateSubcommands {
         #[arg(long, help = "Generate entity file of frontend format")]
         frontend_format: bool,
 
+        #[arg(long, help = "Generate entity file of oxide format")]
+        oxide_format: bool,
+
         #[arg(
             long,
             help = "Generate entity file for hidden tables (i.e. table name starts with an underscore)"
@@ -381,7 +384,17 @@ pub enum GenerateSubcommands {
             help = "Control how the codegen version is displayed in the top banner of the generated file."
         )]
         banner_version: BannerVersion,
+
+        #[arg(long = "rename-variant-name", value_parser = parse_key_val, action = clap::ArgAction::Append)]
+        rename_variant_names: Vec<(String, String)>,
     },
+}
+
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let mut parts = s.splitn(2, '=');
+    let key = parts.next().ok_or("missing key")?;
+    let value = parts.next().ok_or("missing value")?;
+    Ok((key.to_string(), value.to_string()))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
