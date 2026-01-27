@@ -28,6 +28,9 @@ impl EntityWriter {
                 model_extra_attributes,
             ),
             Self::gen_oxide_entity_enum(entity),
+            Self::gen_oxide_as_ref_impl(entity),
+            Self::gen_oxide_iden_impl(entity),
+            Self::gen_oxide_display_impl(entity),
         ];
         code_blocks
     }
@@ -121,25 +124,77 @@ impl EntityWriter {
         column_names_camel_case.push(syn::parse_str("Table").unwrap());
         column_names_camel_case.extend(entity.get_column_names_camel_case());
 
-        let attrs = (0..entity.columns.len() + 1).map(|idx| {
-            let mut ts = quote! {};
-
-            if idx == 0 {
-                ts = quote! {
-                    #[iden = #table_name]
-                };
+        quote! {
+            pub enum #entity_ident {
+                #(
+                    #column_names_camel_case,
+                )*
             }
+        }
+    }
 
-            ts
+    pub fn gen_oxide_as_ref_impl(entity: &Entity) -> TokenStream {
+        let table_name = entity.table_name.to_owned();
+        let entity_name = format!("{table_name}Entity");
+        let entity_ident: TokenStream = entity_name.to_upper_camel_case().parse().unwrap();
+
+        let mut column_names_camel_case: Vec<syn::Ident> = Vec::new();
+        column_names_camel_case.push(syn::parse_str("Table").unwrap());
+        column_names_camel_case.extend(entity.get_column_names_camel_case());
+
+        let mut column_names_snake_case: Vec<syn::Ident> = Vec::new();
+        column_names_snake_case.push(syn::parse_str(&table_name).unwrap());
+        column_names_snake_case.extend(entity.get_column_names_snake_case());
+
+        let columns_mappings = (0..entity.columns.len() + 1).map(|idx| {
+            let column_name = &column_names_camel_case[idx];
+            let column_value = &column_names_snake_case[idx].to_string();
+            let column_value = column_value.strip_prefix("r#").unwrap_or(column_value);
+
+            let line = quote! {
+                #entity_ident::#column_name => #column_value
+            };
+
+            line
         });
 
         quote! {
-            #[derive(sea_query::Iden)]
-            pub enum #entity_ident {
-                #(
-                    #attrs
-                    #column_names_camel_case,
-                )*
+            impl AsRef<str> for #entity_ident {
+                fn as_ref(&self) -> &str {
+                    match self {
+                        #(
+                            #columns_mappings,
+                        )*
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn gen_oxide_iden_impl(entity: &Entity) -> TokenStream {
+        let table_name = entity.table_name.to_owned();
+        let entity_name = format!("{table_name}Entity");
+        let entity_ident: TokenStream = entity_name.to_upper_camel_case().parse().unwrap();
+
+        quote! {
+            impl sea_query::Iden for #entity_ident {
+                fn unquoted(&self, s: &mut dyn std::fmt::Write) {
+                    write!(s, "{}", self.as_ref()).unwrap();
+                }
+            }
+        }
+    }
+
+    pub fn gen_oxide_display_impl(entity: &Entity) -> TokenStream {
+        let table_name = entity.table_name.to_owned();
+        let entity_name = format!("{table_name}Entity");
+        let entity_ident: TokenStream = entity_name.to_upper_camel_case().parse().unwrap();
+
+        quote! {
+            impl std::fmt::Display for #entity_ident {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", self.as_ref())
+                }
             }
         }
     }
