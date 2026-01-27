@@ -3,6 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use sea_query::DynIden;
 use std::collections::HashMap;
+use syn::Ident;
 
 use crate::{EntityFormat, WithSerde};
 
@@ -79,15 +80,67 @@ impl ActiveEnum {
         };
 
         if entity_format == EntityFormat::Oxide {
+            let variant_names: Vec<Ident> = variants.collect();
+
+            let variant_mappings = (0..values.len()).map(|idx| {
+                let variant_name = &variant_names[idx];
+                let variant_value = &values[idx];
+
+                let line = quote! {
+                    #enum_iden::#variant_name => #variant_value
+                };
+
+                line
+            });
+
+            let value_mappings = (0..values.len()).map(|idx| {
+                let variant_name = &variant_names[idx];
+                let variant_value = &values[idx];
+
+                let line = quote! {
+                    #variant_value => #enum_iden::#variant_name
+                };
+
+                line
+            });
+
             quote! {
-                #[derive(Debug, Clone, PartialEq, Eq, Hash, sqlx::Type #copy_derive #serde_derive #extra_derives)]
+                #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, sqlx::Type #copy_derive #serde_derive #extra_derives)]
                 #[sqlx(type_name = #enum_name)]
                 #extra_attributes
                 pub enum #enum_iden {
                     #(
                         #[serde(rename = #values)]
-                        #variants,
+                        #[sqlx(rename = #values)]
+                        #variant_names,
                     )*
+                }
+
+                impl AsRef<str> for #enum_iden {
+                    fn as_ref(&self) -> &str {
+                        match self {
+                            #(
+                                #variant_mappings,
+                            )*
+                        }
+                    }
+                }
+
+                impl std::fmt::Display for #enum_iden {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(f, "{}", self.as_ref())
+                    }
+                }
+
+                impl From<&str> for #enum_iden {
+                    fn from(value: &str) -> Self {
+                        match value {
+                            #(
+                                #value_mappings,
+                            )*
+                            _ => unreachable!()
+                        }
+                    }
                 }
             }
         } else if entity_format == EntityFormat::Frontend {
