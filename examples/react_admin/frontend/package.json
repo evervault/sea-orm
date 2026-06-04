@@ -31,7 +31,8 @@
     "vite": "^5.4.21"
   },
   "overrides": {
-    "yaml": "^1.10.3"
+    "yaml": "^1.10.3",
+    "picomatch@>=4.0.0 <4.0.4": "^4.0.4"
   },
   "name": "react-admin"
 }
