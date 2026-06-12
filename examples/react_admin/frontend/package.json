@@ -33,6 +33,7 @@
   "overrides": {
     "yaml": "^1.10.3",
     "vite@>=6.0.0 <6.4.2": "^6.4.2"
+    "picomatch@>=4.0.0 <4.0.4": "^4.0.4"
   },
   "name": "react-admin"
 }
