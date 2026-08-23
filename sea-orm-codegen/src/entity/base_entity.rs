@@ -5,7 +5,8 @@ use quote::quote;
 use sea_query::ColumnType;
 
 use crate::{
-    Column, ColumnOption, ConjunctRelation, PrimaryKey, Relation, util::escape_rust_keyword,
+    Column, ColumnOption, ConjunctRelation, PrimaryKey, Relation, entity::column::oxide_range,
+    util::escape_rust_keyword,
 };
 
 #[derive(Clone, Debug)]
@@ -53,6 +54,14 @@ impl Entity {
             .clone()
             .into_iter()
             .map(|col| col.get_rs_type(opt))
+            .collect()
+    }
+
+    pub fn get_oxide_column_rs_types(&self, opt: &ColumnOption) -> Vec<TokenStream> {
+        self.columns
+            .clone()
+            .into_iter()
+            .map(|col| col.get_oxide_rs_type(opt))
             .collect()
     }
 
@@ -274,6 +283,23 @@ impl Entity {
             // check if float or double exist.
             // if exist, return nothing
             .map_or(quote! {, Eq}, |_| quote! {})
+    }
+
+    /// As `get_eq_needed`, but also rules out the range element types that are
+    /// not `Eq`. The oxide format renders ranges as `PgRange` rather than
+    /// `String`, so a model struct can carry a field that only implements
+    /// `PartialEq`.
+    pub fn get_oxide_eq_needed(&self) -> TokenStream {
+        let has_non_eq_range = self
+            .columns
+            .iter()
+            .filter_map(|column| oxide_range(&column.col_type))
+            .any(|range| !range.element_is_eq());
+
+        match has_non_eq_range {
+            true => quote! {},
+            false => self.get_eq_needed(),
+        }
     }
 
     pub fn get_column_serde_attributes(

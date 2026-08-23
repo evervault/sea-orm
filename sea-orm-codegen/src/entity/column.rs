@@ -107,6 +107,24 @@ impl Column {
         }
     }
 
+    /// The oxide format decodes rows straight into the model struct with
+    /// `sqlx::FromRow`, so every field has to name a type sqlx can decode from
+    /// that column's Postgres type. `get_rs_type` renders ranges as `String`,
+    /// which is only correct for the standard format, where
+    /// `get_col_type_attrs` pairs it with `select_as = "text"`.
+    ///
+    /// Range fields are always optional. `PgRange` has no serde support, so
+    /// `get_oxide_col_type_attrs` skips these fields, and skipping a field
+    /// requires it to implement `Default` to deserialize — which `Option`
+    /// provides and `PgRange` does not.
+    pub fn get_oxide_rs_type(&self, opt: &ColumnOption) -> TokenStream {
+        let Some(range) = oxide_range(&self.col_type) else {
+            return self.get_rs_type(opt);
+        };
+        let element: TokenStream = range.element_rs_type(opt).parse().unwrap();
+        quote! { Option<sqlx::postgres::types::PgRange<#element>> }
+    }
+
     pub fn get_col_type_attrs(&self) -> Option<TokenStream> {
         let col_type = match &self.col_type {
             ColumnType::Float => Some("Float".to_owned()),
@@ -133,6 +151,11 @@ impl Column {
     }
 
     pub fn get_oxide_col_type_attrs(&self) -> Option<TokenStream> {
+        if oxide_range(&self.col_type).is_some() {
+            // sqlx's PgRange implements neither Serialize nor Deserialize.
+            return quote! { #[serde(skip)] }.into();
+        }
+
         if !matches!(self.col_type, ColumnType::TimestampWithTimeZone) {
             return None;
         }
@@ -320,6 +343,64 @@ impl From<&ColumnDef> for Column {
             unique,
             unique_key: None,
         }
+    }
+}
+
+
+/// A Postgres range type. sea-schema surfaces these as `ColumnType::Custom`,
+/// since sea-query has no range variant of its own.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OxideRange {
+    Int4,
+    Int8,
+    Num,
+    Date,
+    Ts,
+    TsTz,
+}
+
+impl OxideRange {
+    /// The type sqlx decodes the range's bounds into.
+    fn element_rs_type(self, opt: &ColumnOption) -> String {
+        match self {
+            Self::Int4 => "i32".to_owned(),
+            Self::Int8 => "i64".to_owned(),
+            Self::Num => "sqlx::types::BigDecimal".to_owned(),
+            Self::Date => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::NaiveDate".to_owned(),
+                DateTimeCrate::Time => "time::Date".to_owned(),
+            },
+            Self::Ts => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::NaiveDateTime".to_owned(),
+                DateTimeCrate::Time => "time::PrimitiveDateTime".to_owned(),
+            },
+            Self::TsTz => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                DateTimeCrate::Time => "time::OffsetDateTime".to_owned(),
+            },
+        }
+    }
+
+    /// Whether the element type implements `Eq`, and so whether a model struct
+    /// holding this range can derive it. `BigDecimal` implements only
+    /// `PartialEq`; every other element type here is `Eq`.
+    pub fn element_is_eq(self) -> bool {
+        !matches!(self, Self::Num)
+    }
+}
+
+pub fn oxide_range(col_type: &ColumnType) -> Option<OxideRange> {
+    let ColumnType::Custom(iden) = col_type else {
+        return None;
+    };
+    match iden.to_string().as_str() {
+        "int4range" => Some(OxideRange::Int4),
+        "int8range" => Some(OxideRange::Int8),
+        "numrange" => Some(OxideRange::Num),
+        "daterange" => Some(OxideRange::Date),
+        "tsrange" => Some(OxideRange::Ts),
+        "tstzrange" => Some(OxideRange::TsTz),
+        _ => None,
     }
 }
 

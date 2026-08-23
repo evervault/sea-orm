@@ -83,8 +83,8 @@ impl EntityWriter {
             .parse()
             .unwrap();
         let column_names_snake_case = entity.get_column_names_snake_case();
-        let column_rs_types = entity.get_column_rs_types(column_option);
-        let if_eq_needed = entity.get_eq_needed();
+        let column_rs_types = entity.get_oxide_column_rs_types(column_option);
+        let if_eq_needed = entity.get_oxide_eq_needed();
 
         let primary_keys: Vec<String> = entity
             .primary_keys
@@ -225,8 +225,12 @@ impl EntityWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Column, Entity, EntityWriter};
-    use sea_query::{ColumnType, RcOrArc};
+    use crate::{Column, ColumnOption, DateTimeCrate, Entity, EntityWriter};
+    use sea_query::{Alias, ColumnType, IntoIden, RcOrArc};
+
+    fn range_column(name: &str, range: &str) -> Column {
+        column(name, ColumnType::Custom(Alias::new(range).into_iden()))
+    }
 
     fn column(name: &str, col_type: ColumnType) -> Column {
         Column {
@@ -280,5 +284,88 @@ mod tests {
             column("name", ColumnType::Text),
         ]);
         assert!(EntityWriter::gen_import_uuid(&entity).is_empty());
+    }
+
+    #[test]
+    fn range_columns_are_rendered_as_pg_range() {
+        let opt = ColumnOption::default();
+        for (range, element) in [
+            ("int4range", "i32"),
+            ("int8range", "i64"),
+            ("numrange", "sqlx :: types :: BigDecimal"),
+            ("daterange", "chrono :: NaiveDate"),
+            ("tsrange", "chrono :: NaiveDateTime"),
+            ("tstzrange", "chrono :: DateTime < chrono :: Utc >"),
+        ] {
+            assert_eq!(
+                range_column("r", range).get_oxide_rs_type(&opt).to_string(),
+                format!("Option < sqlx :: postgres :: types :: PgRange < {element} >>"),
+                "unexpected type for {range}"
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_range_columns_follow_the_date_time_crate() {
+        let opt = ColumnOption {
+            date_time_crate: DateTimeCrate::Time,
+            ..Default::default()
+        };
+        assert_eq!(
+            range_column("r", "tstzrange")
+                .get_oxide_rs_type(&opt)
+                .to_string(),
+            "Option < sqlx :: postgres :: types :: PgRange < time :: OffsetDateTime >>"
+        );
+    }
+
+    #[test]
+    fn range_columns_are_optional_even_when_not_null() {
+        let mut col = range_column("r", "numrange");
+        col.not_null = true;
+        assert!(
+            col.get_oxide_rs_type(&ColumnOption::default())
+                .to_string()
+                .starts_with("Option <"),
+            "PgRange has no Default, so a skipped field has to be optional"
+        );
+    }
+
+    #[test]
+    fn other_custom_columns_are_untouched() {
+        let opt = ColumnOption::default();
+        assert_eq!(
+            range_column("t", "tsvector").get_oxide_rs_type(&opt).to_string(),
+            "String"
+        );
+    }
+
+    #[test]
+    fn range_columns_are_skipped_by_serde() {
+        assert_eq!(
+            range_column("r", "numrange")
+                .get_oxide_col_type_attrs()
+                .expect("expected a serde attribute")
+                .to_string(),
+            "# [serde (skip)]"
+        );
+    }
+
+    #[test]
+    fn numrange_suppresses_the_eq_derive() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            range_column("r", "numrange"),
+        ]);
+        assert!(entity.get_oxide_eq_needed().is_empty());
+    }
+
+    #[test]
+    fn ranges_with_eq_elements_keep_the_eq_derive() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            range_column("r", "int8range"),
+        ]);
+        assert_eq!(entity.get_oxide_eq_needed().to_string(), ", Eq");
     }
 }
