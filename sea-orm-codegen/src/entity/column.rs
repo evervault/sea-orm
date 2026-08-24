@@ -131,12 +131,12 @@ impl Column {
             ColumnType::Json | ColumnType::JsonBinary => "sqlx::types::Json<serde_json::Value>",
             ColumnType::Date if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveDate",
             ColumnType::Time if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveTime",
-            ColumnType::DateTime if opt.date_time_crate == DateTimeCrate::Chrono => {
-                "chrono::NaiveDateTime"
-            }
-            ColumnType::Timestamp | ColumnType::TimestampWithTimeZone
+            ColumnType::DateTime | ColumnType::Timestamp
                 if opt.date_time_crate == DateTimeCrate::Chrono =>
             {
+                "chrono::NaiveDateTime"
+            }
+            ColumnType::TimestampWithTimeZone if opt.date_time_crate == DateTimeCrate::Chrono => {
                 "chrono::DateTime<chrono::Utc>"
             }
             ColumnType::Date if opt.date_time_crate == DateTimeCrate::Time => "time::Date",

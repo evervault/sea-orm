@@ -395,4 +395,43 @@ mod tests {
         ]);
         assert_eq!(entity.get_oxide_eq_needed().to_string(), ", Eq");
     }
+
+    /// sqlx decodes `TIMESTAMP` only into a naive type and `TIMESTAMPTZ` only
+    /// into an aware one, so the two must not collapse onto the same type.
+    #[test]
+    fn naive_and_aware_timestamps_map_to_distinct_types() {
+        let chrono = ColumnOption::default();
+        for col_type in [ColumnType::DateTime, ColumnType::Timestamp] {
+            assert_eq!(
+                column("t", col_type.clone())
+                    .get_oxide_rs_type(&chrono, &WithSerde::None)
+                    .to_string(),
+                "chrono :: NaiveDateTime",
+                "unexpected type for {col_type:?}"
+            );
+        }
+        assert_eq!(
+            column("t", ColumnType::TimestampWithTimeZone)
+                .get_oxide_rs_type(&chrono, &WithSerde::None)
+                .to_string(),
+            "chrono :: DateTime < chrono :: Utc >"
+        );
+
+        let time = ColumnOption {
+            date_time_crate: DateTimeCrate::Time,
+            ..Default::default()
+        };
+        assert_eq!(
+            column("t", ColumnType::Timestamp)
+                .get_oxide_rs_type(&time, &WithSerde::None)
+                .to_string(),
+            "time :: PrimitiveDateTime"
+        );
+        assert_eq!(
+            column("t", ColumnType::TimestampWithTimeZone)
+                .get_oxide_rs_type(&time, &WithSerde::None)
+                .to_string(),
+            "time :: OffsetDateTime"
+        );
+    }
 }
