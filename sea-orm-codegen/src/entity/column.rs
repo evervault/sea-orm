@@ -56,27 +56,25 @@ impl Column {
                 ColumnType::BigUnsigned => "u64".to_owned(),
                 ColumnType::Float => "f32".to_owned(),
                 ColumnType::Double => "f64".to_owned(),
-                ColumnType::Json | ColumnType::JsonBinary => {
-                    "sqlx::types::Json<serde_json::Value>".to_owned()
-                }
+                ColumnType::Json | ColumnType::JsonBinary => "Json".to_owned(),
                 ColumnType::Date => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveDate".to_owned(),
+                    DateTimeCrate::Chrono => "Date".to_owned(),
                     DateTimeCrate::Time => "TimeDate".to_owned(),
                 },
                 ColumnType::Time => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveTime".to_owned(),
+                    DateTimeCrate::Chrono => "Time".to_owned(),
                     DateTimeCrate::Time => "TimeTime".to_owned(),
                 },
                 ColumnType::DateTime => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveDateTime".to_owned(),
+                    DateTimeCrate::Chrono => "DateTime".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::Timestamp => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                    DateTimeCrate::Chrono => "DateTimeUtc".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::TimestampWithTimeZone => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                    DateTimeCrate::Chrono => "DateTimeWithTimeZone".to_owned(),
                     DateTimeCrate::Time => "TimeDateTimeWithTimeZone".to_owned(),
                 },
                 ColumnType::Decimal(_) | ColumnType::Money(_) => "Decimal".to_owned(),
@@ -118,16 +116,45 @@ impl Column {
     /// so they are emitted as `Option`. Otherwise their nullability follows
     /// the database column as usual.
     pub fn get_oxide_rs_type(&self, opt: &ColumnOption, with_serde: &WithSerde) -> TokenStream {
-        let Some(range) = oxide_range(&self.col_type) else {
-            return self.get_rs_type(opt);
-        };
-        let element: TokenStream = range.element_rs_type(opt).parse().unwrap();
-        let range_type = quote! { sqlx::postgres::types::PgRange<#element> };
-        match (self.not_null, with_serde) {
-            (_, WithSerde::Deserialize | WithSerde::Both) | (false, _) => {
-                quote! { Option<#range_type> }
+        if let Some(range) = oxide_range(&self.col_type) {
+            let element: TokenStream = range.element_rs_type(opt).parse().unwrap();
+            let range_type = quote! { sqlx::postgres::types::PgRange<#element> };
+            return match (self.not_null, with_serde) {
+                (_, WithSerde::Deserialize | WithSerde::Both) | (false, _) => {
+                    quote! { Option<#range_type> }
+                }
+                (true, WithSerde::None | WithSerde::Serialize) => range_type,
+            };
+        }
+
+        let oxide_type = match &self.col_type {
+            ColumnType::Json | ColumnType::JsonBinary => "sqlx::types::Json<serde_json::Value>",
+            ColumnType::Date if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveDate",
+            ColumnType::Time if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveTime",
+            ColumnType::DateTime if opt.date_time_crate == DateTimeCrate::Chrono => {
+                "chrono::NaiveDateTime"
             }
-            (true, WithSerde::None | WithSerde::Serialize) => range_type,
+            ColumnType::Timestamp | ColumnType::TimestampWithTimeZone
+                if opt.date_time_crate == DateTimeCrate::Chrono =>
+            {
+                "chrono::DateTime<chrono::Utc>"
+            }
+            ColumnType::Date if opt.date_time_crate == DateTimeCrate::Time => "time::Date",
+            ColumnType::Time if opt.date_time_crate == DateTimeCrate::Time => "time::Time",
+            ColumnType::DateTime | ColumnType::Timestamp
+                if opt.date_time_crate == DateTimeCrate::Time =>
+            {
+                "time::PrimitiveDateTime"
+            }
+            ColumnType::TimestampWithTimeZone if opt.date_time_crate == DateTimeCrate::Time => {
+                "time::OffsetDateTime"
+            }
+            _ => return self.get_rs_type(opt),
+        };
+        let ident: TokenStream = oxide_type.parse().unwrap();
+        match self.not_null {
+            true => quote! { #ident },
+            false => quote! { Option<#ident> },
         }
     }
 
