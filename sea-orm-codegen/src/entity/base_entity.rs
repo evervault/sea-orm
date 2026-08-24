@@ -5,8 +5,8 @@ use quote::quote;
 use sea_query::ColumnType;
 
 use crate::{
-    Column, ColumnOption, ConjunctRelation, PrimaryKey, Relation, entity::column::oxide_range,
-    util::escape_rust_keyword,
+    Column, ColumnOption, ConjunctRelation, PrimaryKey, Relation, WithSerde,
+    entity::column::oxide_range, util::escape_rust_keyword,
 };
 
 #[derive(Clone, Debug)]
@@ -57,11 +57,15 @@ impl Entity {
             .collect()
     }
 
-    pub fn get_oxide_column_rs_types(&self, opt: &ColumnOption) -> Vec<TokenStream> {
+    pub fn get_oxide_column_rs_types(
+        &self,
+        opt: &ColumnOption,
+        with_serde: &WithSerde,
+    ) -> Vec<TokenStream> {
         self.columns
             .clone()
             .into_iter()
-            .map(|col| col.get_oxide_rs_type(opt))
+            .map(|col| col.get_oxide_rs_type(opt, with_serde))
             .collect()
     }
 

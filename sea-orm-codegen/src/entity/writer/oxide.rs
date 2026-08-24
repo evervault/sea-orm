@@ -83,7 +83,7 @@ impl EntityWriter {
             .parse()
             .unwrap();
         let column_names_snake_case = entity.get_column_names_snake_case();
-        let column_rs_types = entity.get_oxide_column_rs_types(column_option);
+        let column_rs_types = entity.get_oxide_column_rs_types(column_option, with_serde);
         let if_eq_needed = entity.get_oxide_eq_needed();
 
         let primary_keys: Vec<String> = entity
@@ -98,7 +98,7 @@ impl EntityWriter {
             .map(|col| {
                 let mut attrs: Punctuated<_, Comma> = Punctuated::new();
                 let is_primary_key = primary_keys.contains(&col.name);
-                if let Some(ts) = col.get_oxide_col_type_attrs() {
+                if let Some(ts) = col.get_oxide_col_type_attrs(with_serde) {
                     attrs.extend([ts]);
                 };
 
@@ -112,11 +112,18 @@ impl EntityWriter {
                     }
                     ts = quote! { #ts };
                 }
-                let serde_attribute = col.get_serde_attribute(
-                    is_primary_key,
-                    serde_skip_deserializing_primary_key,
-                    serde_skip_hidden_column,
-                );
+                let serde_attribute = if crate::entity::column::oxide_range(&col.col_type).is_some()
+                {
+                    // The range-specific attribute already skips unsupported
+                    // serde directions, so do not emit a second serde attribute.
+                    quote! {}
+                } else {
+                    col.get_serde_attribute(
+                        is_primary_key,
+                        serde_skip_deserializing_primary_key,
+                        serde_skip_hidden_column,
+                    )
+                };
                 ts = quote! {
                     #ts
                     #serde_attribute
@@ -225,7 +232,7 @@ impl EntityWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Column, ColumnOption, DateTimeCrate, Entity, EntityWriter};
+    use crate::{Column, ColumnOption, DateTimeCrate, Entity, EntityWriter, WithSerde};
     use sea_query::{Alias, ColumnType, IntoIden, RcOrArc};
 
     fn range_column(name: &str, range: &str) -> Column {
@@ -298,8 +305,10 @@ mod tests {
             ("tstzrange", "chrono :: DateTime < chrono :: Utc >"),
         ] {
             assert_eq!(
-                range_column("r", range).get_oxide_rs_type(&opt).to_string(),
-                format!("Option < sqlx :: postgres :: types :: PgRange < {element} >>"),
+                range_column("r", range)
+                    .get_oxide_rs_type(&opt, &WithSerde::Both)
+                    .to_string(),
+                format!("Option < sqlx :: postgres :: types :: PgRange < {element} > >"),
                 "unexpected type for {range}"
             );
         }
@@ -313,21 +322,30 @@ mod tests {
         };
         assert_eq!(
             range_column("r", "tstzrange")
-                .get_oxide_rs_type(&opt)
+                .get_oxide_rs_type(&opt, &WithSerde::Both)
                 .to_string(),
-            "Option < sqlx :: postgres :: types :: PgRange < time :: OffsetDateTime >>"
+            "Option < sqlx :: postgres :: types :: PgRange < time :: OffsetDateTime > >"
         );
     }
 
     #[test]
-    fn range_columns_are_optional_even_when_not_null() {
-        let mut col = range_column("r", "numrange");
-        col.not_null = true;
+    fn range_columns_are_optional_when_deserializing() {
+        let col = range_column("r", "numrange");
         assert!(
-            col.get_oxide_rs_type(&ColumnOption::default())
+            col.get_oxide_rs_type(&ColumnOption::default(), &WithSerde::Deserialize)
                 .to_string()
                 .starts_with("Option <"),
-            "PgRange has no Default, so a skipped field has to be optional"
+            "a skipped field must implement Default"
+        );
+    }
+
+    #[test]
+    fn non_null_range_columns_preserve_nullability_without_deserialization() {
+        let col = range_column("r", "numrange");
+        assert_eq!(
+            col.get_oxide_rs_type(&ColumnOption::default(), &WithSerde::None)
+                .to_string(),
+            "sqlx :: postgres :: types :: PgRange < sqlx :: types :: BigDecimal >"
         );
     }
 
@@ -335,16 +353,25 @@ mod tests {
     fn other_custom_columns_are_untouched() {
         let opt = ColumnOption::default();
         assert_eq!(
-            range_column("t", "tsvector").get_oxide_rs_type(&opt).to_string(),
+            range_column("t", "tsvector")
+                .get_oxide_rs_type(&opt, &WithSerde::None)
+                .to_string(),
             "String"
         );
     }
 
     #[test]
-    fn range_columns_are_skipped_by_serde() {
+    fn range_columns_are_skipped_only_when_serde_is_derived() {
+        let col = range_column("r", "numrange");
+        assert!(col.get_oxide_col_type_attrs(&WithSerde::None).is_none());
         assert_eq!(
-            range_column("r", "numrange")
-                .get_oxide_col_type_attrs()
+            col.get_oxide_col_type_attrs(&WithSerde::Serialize)
+                .expect("expected a serde attribute")
+                .to_string(),
+            "# [serde (skip_serializing)]"
+        );
+        assert_eq!(
+            col.get_oxide_col_type_attrs(&WithSerde::Deserialize)
                 .expect("expected a serde attribute")
                 .to_string(),
             "# [serde (skip)]"

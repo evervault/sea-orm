@@ -1,4 +1,4 @@
-use crate::{util::escape_rust_keyword, BigIntegerType, DateTimeCrate};
+use crate::{BigIntegerType, DateTimeCrate, WithSerde, util::escape_rust_keyword};
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -113,16 +113,22 @@ impl Column {
     /// which is only correct for the standard format, where
     /// `get_col_type_attrs` pairs it with `select_as = "text"`.
     ///
-    /// Range fields are always optional. `PgRange` has no serde support, so
-    /// `get_oxide_col_type_attrs` skips these fields, and skipping a field
-    /// requires it to implement `Default` to deserialize — which `Option`
-    /// provides and `PgRange` does not.
-    pub fn get_oxide_rs_type(&self, opt: &ColumnOption) -> TokenStream {
+    /// `PgRange` has no serde support. When the generated model derives
+    /// `Deserialize`, range fields are skipped and must implement `Default`,
+    /// so they are emitted as `Option`. Otherwise their nullability follows
+    /// the database column as usual.
+    pub fn get_oxide_rs_type(&self, opt: &ColumnOption, with_serde: &WithSerde) -> TokenStream {
         let Some(range) = oxide_range(&self.col_type) else {
             return self.get_rs_type(opt);
         };
         let element: TokenStream = range.element_rs_type(opt).parse().unwrap();
-        quote! { Option<sqlx::postgres::types::PgRange<#element>> }
+        let range_type = quote! { sqlx::postgres::types::PgRange<#element> };
+        match (self.not_null, with_serde) {
+            (_, WithSerde::Deserialize | WithSerde::Both) | (false, _) => {
+                quote! { Option<#range_type> }
+            }
+            (true, WithSerde::None | WithSerde::Serialize) => range_type,
+        }
     }
 
     pub fn get_col_type_attrs(&self) -> Option<TokenStream> {
@@ -150,10 +156,14 @@ impl Column {
         col_type.map(|ty| quote! { column_type = #ty })
     }
 
-    pub fn get_oxide_col_type_attrs(&self) -> Option<TokenStream> {
+    pub fn get_oxide_col_type_attrs(&self, with_serde: &WithSerde) -> Option<TokenStream> {
         if oxide_range(&self.col_type).is_some() {
             // sqlx's PgRange implements neither Serialize nor Deserialize.
-            return quote! { #[serde(skip)] }.into();
+            return match with_serde {
+                WithSerde::None => None,
+                WithSerde::Serialize => Some(quote! { #[serde(skip_serializing)] }),
+                WithSerde::Deserialize | WithSerde::Both => Some(quote! { #[serde(skip)] }),
+            };
         }
 
         if !matches!(self.col_type, ColumnType::TimestampWithTimeZone) {
@@ -345,7 +355,6 @@ impl From<&ColumnDef> for Column {
         }
     }
 }
-
 
 /// A Postgres range type. sea-schema surfaces these as `ColumnType::Custom`,
 /// since sea-query has no range variant of its own.
