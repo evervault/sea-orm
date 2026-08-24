@@ -45,8 +45,6 @@ impl EntityWriter {
         imports
     }
 
-    /// The oxide format is generated without a prelude, so any type named by
-    /// bare identifier in the model struct needs an explicit import here.
     pub fn gen_import_uuid(entity: &Entity) -> TokenStream {
         fn has_uuid(col_type: &sea_query::ColumnType) -> bool {
             match col_type {
