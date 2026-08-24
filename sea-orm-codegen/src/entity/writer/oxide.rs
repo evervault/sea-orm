@@ -40,8 +40,31 @@ impl EntityWriter {
 
         imports.extend(Self::gen_import_serde(with_serde));
         imports.extend(Self::gen_import_active_enum(entity));
+        imports.extend(Self::gen_import_uuid(entity));
 
         imports
+    }
+
+    pub fn gen_import_uuid(entity: &Entity) -> TokenStream {
+        fn has_uuid(col_type: &sea_query::ColumnType) -> bool {
+            match col_type {
+                sea_query::ColumnType::Uuid => true,
+                sea_query::ColumnType::Array(inner) => has_uuid(inner),
+                _ => false,
+            }
+        }
+
+        if entity
+            .columns
+            .iter()
+            .any(|col| has_uuid(col.get_inner_col_type()))
+        {
+            quote! {
+                use uuid::Uuid;
+            }
+        } else {
+            TokenStream::new()
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -197,5 +220,65 @@ impl EntityWriter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Column, Entity, EntityWriter};
+    use sea_query::{ColumnType, RcOrArc};
+
+    fn column(name: &str, col_type: ColumnType) -> Column {
+        Column {
+            name: name.to_owned(),
+            col_type,
+            auto_increment: false,
+            not_null: true,
+            unique: false,
+            unique_key: None,
+        }
+    }
+
+    fn entity(columns: Vec<Column>) -> Entity {
+        Entity {
+            table_name: "test".to_owned(),
+            columns,
+            relations: vec![],
+            conjunct_relations: vec![],
+            primary_keys: vec![],
+        }
+    }
+
+    #[test]
+    fn gen_import_uuid_emits_import_for_uuid_column() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            column("uuid", ColumnType::Uuid),
+        ]);
+        assert_eq!(
+            EntityWriter::gen_import_uuid(&entity).to_string(),
+            "use uuid :: Uuid ;"
+        );
+    }
+
+    #[test]
+    fn gen_import_uuid_emits_import_for_uuid_array_column() {
+        let entity = entity(vec![column(
+            "uuids",
+            ColumnType::Array(RcOrArc::new(ColumnType::Uuid)),
+        )]);
+        assert_eq!(
+            EntityWriter::gen_import_uuid(&entity).to_string(),
+            "use uuid :: Uuid ;"
+        );
+    }
+
+    #[test]
+    fn gen_import_uuid_emits_nothing_without_uuid_column() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            column("name", ColumnType::Text),
+        ]);
+        assert!(EntityWriter::gen_import_uuid(&entity).is_empty());
     }
 }

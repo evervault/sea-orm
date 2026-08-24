@@ -192,6 +192,7 @@ mod tests {
                 &TokenStream::new(),
                 &TokenStream::new(),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             quote!(
@@ -235,6 +236,7 @@ mod tests {
                 &TokenStream::new(),
                 &TokenStream::new(),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             quote!(
@@ -287,6 +289,7 @@ mod tests {
                 &bonus_derive(["specta::Type", "ts_rs::TS"]),
                 &TokenStream::new(),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             build_generated_enum(),
@@ -324,6 +327,7 @@ mod tests {
                 &TokenStream::new(),
                 &bonus_attributes([r#"serde(rename_all = "camelCase")"#]),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             quote!(
@@ -357,6 +361,7 @@ mod tests {
                 &TokenStream::new(),
                 &bonus_attributes([r#"serde(rename_all = "camelCase")"#, "ts(export)"]),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             quote!(
@@ -408,6 +413,7 @@ mod tests {
                 &TokenStream::new(),
                 &TokenStream::new(),
                 EntityFormat::Compact,
+                Default::default(),
             )
             .to_string(),
             quote!(
