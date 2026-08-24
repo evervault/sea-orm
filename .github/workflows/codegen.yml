@@ -1,0 +1,24 @@
+name: Codegen
+
+on:
+  pull_request:
+    paths:
+      - "sea-orm-codegen/**"
+      - "sea-orm-macros/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/codegen.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test codegen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo build -p sea-orm-codegen
+      - run: cargo test -p sea-orm-codegen

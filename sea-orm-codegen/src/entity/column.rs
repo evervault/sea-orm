@@ -1,4 +1,4 @@
-use crate::{util::escape_rust_keyword, BigIntegerType, DateTimeCrate};
+use crate::{BigIntegerType, DateTimeCrate, WithSerde, util::escape_rust_keyword};
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -56,27 +56,25 @@ impl Column {
                 ColumnType::BigUnsigned => "u64".to_owned(),
                 ColumnType::Float => "f32".to_owned(),
                 ColumnType::Double => "f64".to_owned(),
-                ColumnType::Json | ColumnType::JsonBinary => {
-                    "sqlx::types::Json<serde_json::Value>".to_owned()
-                }
+                ColumnType::Json | ColumnType::JsonBinary => "Json".to_owned(),
                 ColumnType::Date => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveDate".to_owned(),
+                    DateTimeCrate::Chrono => "Date".to_owned(),
                     DateTimeCrate::Time => "TimeDate".to_owned(),
                 },
                 ColumnType::Time => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveTime".to_owned(),
+                    DateTimeCrate::Chrono => "Time".to_owned(),
                     DateTimeCrate::Time => "TimeTime".to_owned(),
                 },
                 ColumnType::DateTime => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::NaiveDateTime".to_owned(),
+                    DateTimeCrate::Chrono => "DateTime".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::Timestamp => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                    DateTimeCrate::Chrono => "DateTimeUtc".to_owned(),
                     DateTimeCrate::Time => "TimeDateTime".to_owned(),
                 },
                 ColumnType::TimestampWithTimeZone => match opt.date_time_crate {
-                    DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                    DateTimeCrate::Chrono => "DateTimeWithTimeZone".to_owned(),
                     DateTimeCrate::Time => "TimeDateTimeWithTimeZone".to_owned(),
                 },
                 ColumnType::Decimal(_) | ColumnType::Money(_) => "Decimal".to_owned(),
@@ -101,6 +99,59 @@ impl Column {
             }
         }
         let ident: TokenStream = write_rs_type(&self.col_type, opt).parse().unwrap();
+        match self.not_null {
+            true => quote! { #ident },
+            false => quote! { Option<#ident> },
+        }
+    }
+
+    /// The oxide format decodes rows straight into the model struct with
+    /// `sqlx::FromRow`, so every field has to name a type sqlx can decode from
+    /// that column's Postgres type. `get_rs_type` renders ranges as `String`,
+    /// which is only correct for the standard format, where
+    /// `get_col_type_attrs` pairs it with `select_as = "text"`.
+    ///
+    /// `PgRange` has no serde support. When the generated model derives
+    /// `Deserialize`, range fields are skipped and must implement `Default`,
+    /// so they are emitted as `Option`. Otherwise their nullability follows
+    /// the database column as usual.
+    pub fn get_oxide_rs_type(&self, opt: &ColumnOption, with_serde: &WithSerde) -> TokenStream {
+        if let Some(range) = oxide_range(&self.col_type) {
+            let element: TokenStream = range.element_rs_type(opt).parse().unwrap();
+            let range_type = quote! { sqlx::postgres::types::PgRange<#element> };
+            return match (self.not_null, with_serde) {
+                (_, WithSerde::Deserialize | WithSerde::Both) | (false, _) => {
+                    quote! { Option<#range_type> }
+                }
+                (true, WithSerde::None | WithSerde::Serialize) => range_type,
+            };
+        }
+
+        let oxide_type = match &self.col_type {
+            ColumnType::Json | ColumnType::JsonBinary => "sqlx::types::Json<serde_json::Value>",
+            ColumnType::Date if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveDate",
+            ColumnType::Time if opt.date_time_crate == DateTimeCrate::Chrono => "chrono::NaiveTime",
+            ColumnType::DateTime | ColumnType::Timestamp
+                if opt.date_time_crate == DateTimeCrate::Chrono =>
+            {
+                "chrono::NaiveDateTime"
+            }
+            ColumnType::TimestampWithTimeZone if opt.date_time_crate == DateTimeCrate::Chrono => {
+                "chrono::DateTime<chrono::Utc>"
+            }
+            ColumnType::Date if opt.date_time_crate == DateTimeCrate::Time => "time::Date",
+            ColumnType::Time if opt.date_time_crate == DateTimeCrate::Time => "time::Time",
+            ColumnType::DateTime | ColumnType::Timestamp
+                if opt.date_time_crate == DateTimeCrate::Time =>
+            {
+                "time::PrimitiveDateTime"
+            }
+            ColumnType::TimestampWithTimeZone if opt.date_time_crate == DateTimeCrate::Time => {
+                "time::OffsetDateTime"
+            }
+            _ => return self.get_rs_type(opt),
+        };
+        let ident: TokenStream = oxide_type.parse().unwrap();
         match self.not_null {
             true => quote! { #ident },
             false => quote! { Option<#ident> },
@@ -132,7 +183,16 @@ impl Column {
         col_type.map(|ty| quote! { column_type = #ty })
     }
 
-    pub fn get_oxide_col_type_attrs(&self) -> Option<TokenStream> {
+    pub fn get_oxide_col_type_attrs(&self, with_serde: &WithSerde) -> Option<TokenStream> {
+        if oxide_range(&self.col_type).is_some() {
+            // sqlx's PgRange implements neither Serialize nor Deserialize.
+            return match with_serde {
+                WithSerde::None => None,
+                WithSerde::Serialize => Some(quote! { #[serde(skip_serializing)] }),
+                WithSerde::Deserialize | WithSerde::Both => Some(quote! { #[serde(skip)] }),
+            };
+        }
+
         if !matches!(self.col_type, ColumnType::TimestampWithTimeZone) {
             return None;
         }
@@ -320,6 +380,63 @@ impl From<&ColumnDef> for Column {
             unique,
             unique_key: None,
         }
+    }
+}
+
+/// A Postgres range type. sea-schema surfaces these as `ColumnType::Custom`,
+/// since sea-query has no range variant of its own.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OxideRange {
+    Int4,
+    Int8,
+    Num,
+    Date,
+    Ts,
+    TsTz,
+}
+
+impl OxideRange {
+    /// The type sqlx decodes the range's bounds into.
+    fn element_rs_type(self, opt: &ColumnOption) -> String {
+        match self {
+            Self::Int4 => "i32".to_owned(),
+            Self::Int8 => "i64".to_owned(),
+            Self::Num => "sqlx::types::BigDecimal".to_owned(),
+            Self::Date => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::NaiveDate".to_owned(),
+                DateTimeCrate::Time => "time::Date".to_owned(),
+            },
+            Self::Ts => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::NaiveDateTime".to_owned(),
+                DateTimeCrate::Time => "time::PrimitiveDateTime".to_owned(),
+            },
+            Self::TsTz => match opt.date_time_crate {
+                DateTimeCrate::Chrono => "chrono::DateTime<chrono::Utc>".to_owned(),
+                DateTimeCrate::Time => "time::OffsetDateTime".to_owned(),
+            },
+        }
+    }
+
+    /// Whether the element type implements `Eq`, and so whether a model struct
+    /// holding this range can derive it. `BigDecimal` implements only
+    /// `PartialEq`; every other element type here is `Eq`.
+    pub fn element_is_eq(self) -> bool {
+        !matches!(self, Self::Num)
+    }
+}
+
+pub fn oxide_range(col_type: &ColumnType) -> Option<OxideRange> {
+    let ColumnType::Custom(iden) = col_type else {
+        return None;
+    };
+    match iden.to_string().as_str() {
+        "int4range" => Some(OxideRange::Int4),
+        "int8range" => Some(OxideRange::Int8),
+        "numrange" => Some(OxideRange::Num),
+        "daterange" => Some(OxideRange::Date),
+        "tsrange" => Some(OxideRange::Ts),
+        "tstzrange" => Some(OxideRange::TsTz),
+        _ => None,
     }
 }
 

@@ -83,8 +83,8 @@ impl EntityWriter {
             .parse()
             .unwrap();
         let column_names_snake_case = entity.get_column_names_snake_case();
-        let column_rs_types = entity.get_column_rs_types(column_option);
-        let if_eq_needed = entity.get_eq_needed();
+        let column_rs_types = entity.get_oxide_column_rs_types(column_option, with_serde);
+        let if_eq_needed = entity.get_oxide_eq_needed();
 
         let primary_keys: Vec<String> = entity
             .primary_keys
@@ -98,7 +98,7 @@ impl EntityWriter {
             .map(|col| {
                 let mut attrs: Punctuated<_, Comma> = Punctuated::new();
                 let is_primary_key = primary_keys.contains(&col.name);
-                if let Some(ts) = col.get_oxide_col_type_attrs() {
+                if let Some(ts) = col.get_oxide_col_type_attrs(with_serde) {
                     attrs.extend([ts]);
                 };
 
@@ -112,11 +112,18 @@ impl EntityWriter {
                     }
                     ts = quote! { #ts };
                 }
-                let serde_attribute = col.get_serde_attribute(
-                    is_primary_key,
-                    serde_skip_deserializing_primary_key,
-                    serde_skip_hidden_column,
-                );
+                let serde_attribute = if crate::entity::column::oxide_range(&col.col_type).is_some()
+                {
+                    // The range-specific attribute already skips unsupported
+                    // serde directions, so do not emit a second serde attribute.
+                    quote! {}
+                } else {
+                    col.get_serde_attribute(
+                        is_primary_key,
+                        serde_skip_deserializing_primary_key,
+                        serde_skip_hidden_column,
+                    )
+                };
                 ts = quote! {
                     #ts
                     #serde_attribute
@@ -225,8 +232,12 @@ impl EntityWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Column, Entity, EntityWriter};
-    use sea_query::{ColumnType, RcOrArc};
+    use crate::{Column, ColumnOption, DateTimeCrate, Entity, EntityWriter, WithSerde};
+    use sea_query::{Alias, ColumnType, IntoIden, RcOrArc};
+
+    fn range_column(name: &str, range: &str) -> Column {
+        column(name, ColumnType::Custom(Alias::new(range).into_iden()))
+    }
 
     fn column(name: &str, col_type: ColumnType) -> Column {
         Column {
@@ -280,5 +291,147 @@ mod tests {
             column("name", ColumnType::Text),
         ]);
         assert!(EntityWriter::gen_import_uuid(&entity).is_empty());
+    }
+
+    #[test]
+    fn range_columns_are_rendered_as_pg_range() {
+        let opt = ColumnOption::default();
+        for (range, element) in [
+            ("int4range", "i32"),
+            ("int8range", "i64"),
+            ("numrange", "sqlx :: types :: BigDecimal"),
+            ("daterange", "chrono :: NaiveDate"),
+            ("tsrange", "chrono :: NaiveDateTime"),
+            ("tstzrange", "chrono :: DateTime < chrono :: Utc >"),
+        ] {
+            assert_eq!(
+                range_column("r", range)
+                    .get_oxide_rs_type(&opt, &WithSerde::Both)
+                    .to_string(),
+                format!("Option < sqlx :: postgres :: types :: PgRange < {element} > >"),
+                "unexpected type for {range}"
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_range_columns_follow_the_date_time_crate() {
+        let opt = ColumnOption {
+            date_time_crate: DateTimeCrate::Time,
+            ..Default::default()
+        };
+        assert_eq!(
+            range_column("r", "tstzrange")
+                .get_oxide_rs_type(&opt, &WithSerde::Both)
+                .to_string(),
+            "Option < sqlx :: postgres :: types :: PgRange < time :: OffsetDateTime > >"
+        );
+    }
+
+    #[test]
+    fn range_columns_are_optional_when_deserializing() {
+        let col = range_column("r", "numrange");
+        assert!(
+            col.get_oxide_rs_type(&ColumnOption::default(), &WithSerde::Deserialize)
+                .to_string()
+                .starts_with("Option <"),
+            "a skipped field must implement Default"
+        );
+    }
+
+    #[test]
+    fn non_null_range_columns_preserve_nullability_without_deserialization() {
+        let col = range_column("r", "numrange");
+        assert_eq!(
+            col.get_oxide_rs_type(&ColumnOption::default(), &WithSerde::None)
+                .to_string(),
+            "sqlx :: postgres :: types :: PgRange < sqlx :: types :: BigDecimal >"
+        );
+    }
+
+    #[test]
+    fn other_custom_columns_are_untouched() {
+        let opt = ColumnOption::default();
+        assert_eq!(
+            range_column("t", "tsvector")
+                .get_oxide_rs_type(&opt, &WithSerde::None)
+                .to_string(),
+            "String"
+        );
+    }
+
+    #[test]
+    fn range_columns_are_skipped_only_when_serde_is_derived() {
+        let col = range_column("r", "numrange");
+        assert!(col.get_oxide_col_type_attrs(&WithSerde::None).is_none());
+        assert_eq!(
+            col.get_oxide_col_type_attrs(&WithSerde::Serialize)
+                .expect("expected a serde attribute")
+                .to_string(),
+            "# [serde (skip_serializing)]"
+        );
+        assert_eq!(
+            col.get_oxide_col_type_attrs(&WithSerde::Deserialize)
+                .expect("expected a serde attribute")
+                .to_string(),
+            "# [serde (skip)]"
+        );
+    }
+
+    #[test]
+    fn numrange_suppresses_the_eq_derive() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            range_column("r", "numrange"),
+        ]);
+        assert!(entity.get_oxide_eq_needed().is_empty());
+    }
+
+    #[test]
+    fn ranges_with_eq_elements_keep_the_eq_derive() {
+        let entity = entity(vec![
+            column("id", ColumnType::BigInteger),
+            range_column("r", "int8range"),
+        ]);
+        assert_eq!(entity.get_oxide_eq_needed().to_string(), ", Eq");
+    }
+
+    /// sqlx decodes `TIMESTAMP` only into a naive type and `TIMESTAMPTZ` only
+    /// into an aware one, so the two must not collapse onto the same type.
+    #[test]
+    fn naive_and_aware_timestamps_map_to_distinct_types() {
+        let chrono = ColumnOption::default();
+        for col_type in [ColumnType::DateTime, ColumnType::Timestamp] {
+            assert_eq!(
+                column("t", col_type.clone())
+                    .get_oxide_rs_type(&chrono, &WithSerde::None)
+                    .to_string(),
+                "chrono :: NaiveDateTime",
+                "unexpected type for {col_type:?}"
+            );
+        }
+        assert_eq!(
+            column("t", ColumnType::TimestampWithTimeZone)
+                .get_oxide_rs_type(&chrono, &WithSerde::None)
+                .to_string(),
+            "chrono :: DateTime < chrono :: Utc >"
+        );
+
+        let time = ColumnOption {
+            date_time_crate: DateTimeCrate::Time,
+            ..Default::default()
+        };
+        assert_eq!(
+            column("t", ColumnType::Timestamp)
+                .get_oxide_rs_type(&time, &WithSerde::None)
+                .to_string(),
+            "time :: PrimitiveDateTime"
+        );
+        assert_eq!(
+            column("t", ColumnType::TimestampWithTimeZone)
+                .get_oxide_rs_type(&time, &WithSerde::None)
+                .to_string(),
+            "time :: OffsetDateTime"
+        );
     }
 }
