@@ -16,11 +16,20 @@ struct DeriveEntity {
     relation_ident: syn::Ident,
     schema_name: Option<syn::LitStr>,
     table_name: Option<syn::LitStr>,
+    unit_struct: bool,
 }
 
 impl DeriveEntity {
     fn new(input: syn::DeriveInput) -> Result<Self, syn::Error> {
         let sea_attr = derive_attr::SeaOrm::try_from_attributes(&input.attrs)?.unwrap_or_default();
+
+        let unit_struct = matches!(
+            &input.data,
+            syn::Data::Struct(syn::DataStruct {
+                fields: syn::Fields::Unit,
+                ..
+            })
+        );
 
         let ident = input.ident;
         let column_ident = sea_attr.column.unwrap_or_else(|| format_ident!("Column"));
@@ -53,6 +62,7 @@ impl DeriveEntity {
             relation_ident,
             schema_name,
             table_name,
+            unit_struct,
         })
     }
 
@@ -161,17 +171,19 @@ impl DeriveEntity {
     }
 
     fn impl_entity_registry(&self) -> TokenStream {
-        if cfg!(feature = "entity-registry") {
-            quote! {
-                sea_orm::register_entity! {
-                    sea_orm::EntityRegistry {
-                        module_path: module_path!(),
-                        schema_info: |schema| sea_orm::EntitySchemaInfo::new(Entity, schema),
-                    }
+        // An Entity that carries data (e.g. a runtime table name) has no static schema, and
+        // cannot be named as a value here either, so there is nothing to register.
+        if !cfg!(feature = "entity-registry") || !self.unit_struct {
+            return quote!();
+        }
+        let ident = &self.ident;
+        quote! {
+            sea_orm::register_entity! {
+                sea_orm::EntityRegistry {
+                    module_path: module_path!(),
+                    schema_info: |schema| sea_orm::EntitySchemaInfo::new(#ident, schema),
                 }
             }
-        } else {
-            quote!()
         }
     }
 }
