@@ -114,23 +114,13 @@ pub fn expand_derive_active_model_ex(
                                         ));
                                     }
                                 }
-                                if compound_attrs.self_ref.is_some()
-                                    && compound_attrs.via.is_some()
-                                    && compound_attrs.reverse.is_none()
+                                if let (Some(()), Some(via)) =
+                                    (&compound_attrs.self_ref, &compound_attrs.via)
                                 {
                                     has_many_via_self_fields.push((
                                         ident.clone(),
-                                        compound_attrs.via.as_ref().unwrap().value(),
-                                        false,
-                                    ));
-                                } else if compound_attrs.self_ref.is_some()
-                                    && compound_attrs.via.is_some()
-                                    && compound_attrs.reverse.is_some()
-                                {
-                                    has_many_via_self_fields.push((
-                                        ident.clone(),
-                                        compound_attrs.via.as_ref().unwrap().value(),
-                                        true,
+                                        via.value(),
+                                        compound_attrs.reverse.is_some(),
                                     ));
                                 }
                             }

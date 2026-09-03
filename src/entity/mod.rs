@@ -115,6 +115,17 @@ mod primary_key;
 mod registry;
 mod relation;
 
+/// Registers an Entity with the Entity Registry.
+///
+/// This no-op fallback is used when the `entity-registry` feature is disabled, so that
+/// the code emitted by `DeriveEntity` compiles no matter how the feature is resolved
+/// for `sea-orm-macros`.
+#[cfg(not(feature = "entity-registry"))]
+#[macro_export]
+macro_rules! register_entity {
+    ($($entity:tt)*) => {};
+}
+
 pub use active_enum::*;
 pub use active_model::*;
 pub use active_model_ex::*;
